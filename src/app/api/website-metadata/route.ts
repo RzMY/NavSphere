@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { auth } from '@/lib/auth'
-import { uint8ArrayToBase64 } from '@/lib/buffer-utils'
+import { getContentTypeFromExtension, uploadAssetToBlob } from '@/lib/blob-storage'
 
 export const runtime = 'edge'
 
@@ -59,7 +59,7 @@ export async function POST(request: Request) {
             }
         }
 
-        // 如果获取到了 favicon，下载并上传到 GitHub
+        // 如果获取到了 favicon，下载并上传到 Vercel Blob
         // 对于视频链接（如 Bilibili），如果已有封面图片，则不需要处理 favicon
         const isVideoUrl = extractBilibiliVideoId(url) !== null
         const skipFavicon = isVideoUrl && metadata.image
@@ -371,7 +371,7 @@ async function downloadGoogleFavicon(domain: string, token: string): Promise<str
         if (response.ok) {
             const arrayBuffer = await response.arrayBuffer()
             const binaryData = new Uint8Array(arrayBuffer)
-            const { path } = await uploadImageToGitHub(binaryData, token, 'png', 'favicon')
+            const { path } = await uploadImageToBlob(binaryData, token, 'png', 'favicon')
             return path
         } else {
             throw new Error(`Failed to download Google favicon: ${response.status}`)
@@ -438,14 +438,16 @@ async function downloadAndUploadIcon(
             if (response.ok) {
                 const arrayBuffer = await response.arrayBuffer()
                 const binaryData = new Uint8Array(arrayBuffer)
+                const responseContentType = response.headers.get('content-type') || undefined
 
-                // 上传到 GitHub
-                const { path } = await uploadImageToGitHub(
+                // 上传到 Vercel Blob
+                const { path } = await uploadImageToBlob(
                     binaryData,
                     token,
-                    getFileExtension(iconUrl),
+                    getFileExtension(iconUrl, responseContentType),
                     prefix,
-                    folder
+                    folder,
+                    responseContentType
                 )
                 return path
             } else {
@@ -462,7 +464,12 @@ async function downloadAndUploadIcon(
     throw lastError || new Error('All download strategies failed')
 }
 
-function getFileExtension(url: string): string {
+function getFileExtension(url: string, contentType?: string): string {
+    const extensionFromContentType = getImageExtensionFromContentType(contentType)
+    if (extensionFromContentType) {
+        return extensionFromContentType
+    }
+
     try {
         const pathname = new URL(url).pathname
         const extension = pathname.split('.').pop()?.toLowerCase()
@@ -476,47 +483,45 @@ function getFileExtension(url: string): string {
     }
 }
 
-async function uploadImageToGitHub(
+function getImageExtensionFromContentType(contentType?: string | null): string | null {
+    const normalizedContentType = contentType?.split(';')[0].trim().toLowerCase()
+
+    switch (normalizedContentType) {
+        case 'image/svg+xml':
+            return 'svg'
+        case 'image/jpeg':
+            return 'jpg'
+        case 'image/png':
+            return 'png'
+        case 'image/gif':
+            return 'gif'
+        case 'image/x-icon':
+        case 'image/vnd.microsoft.icon':
+            return 'ico'
+        case 'image/webp':
+            return 'webp'
+        default:
+            return null
+    }
+}
+
+async function uploadImageToBlob(
     binaryData: Uint8Array,
-    token: string,
+    _token: string,
     extension: string = 'png',
     prefix: string = 'favicon',
-    folder: string = 'assets'
+    folder: string = 'assets',
+    contentType?: string
 ): Promise<{ path: string, commitHash: string }> {
-    const owner = process.env.GITHUB_OWNER!
-    const repo = process.env.GITHUB_REPO!
-    const branch = process.env.GITHUB_BRANCH || 'main'
-
-    // 移除 folder 开头和结尾的斜杠，避免路径错误
-    const cleanFolder = folder.replace(/^\/+|\/+$/g, '')
-    const path = `/${cleanFolder}/${prefix}_${Date.now()}.${extension}`
-    const githubPath = 'public' + path
-
-    // Convert Uint8Array to Base64
-    const base64String = uint8ArrayToBase64(binaryData)
-    const currentFileUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${githubPath}?ref=${branch}`
-
-    const response = await fetch(currentFileUrl, {
-        method: 'PUT',
-        headers: {
-            'Authorization': `token ${token}`,
-            'Accept': 'application/vnd.github.v3+json',
-        },
-        body: JSON.stringify({
-            message: `Upload ${prefix} ${githubPath}`,
-            content: base64String,
-            branch: branch,
-        }),
+    const uploadResult = await uploadAssetToBlob(binaryData, {
+        folder,
+        prefix,
+        extension,
+        contentType: contentType || getContentTypeFromExtension(extension),
     })
 
-    if (!response.ok) {
-        const errorData = await response.json()
-        console.error('Failed to upload image to GitHub:', errorData)
-        throw new Error(`Failed to upload image to GitHub: ${errorData.message || 'Unknown error'}`)
+    return {
+        path: uploadResult.url,
+        commitHash: uploadResult.etag || uploadResult.pathname,
     }
-
-    const responseData = await response.json()
-    const commitHash = responseData.commit.sha
-
-    return { path, commitHash }
 }

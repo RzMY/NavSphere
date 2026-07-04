@@ -2,11 +2,11 @@ import { NextResponse } from 'next/server'
 import { auth } from '@/lib/auth'
 import { commitFile, getFileContent } from '@/lib/github'
 import type { ResourceMetadata } from '@/types/resource-metadata'
-import { uint8ArrayToBase64 } from '@/lib/buffer-utils'
+import { uploadAssetToBlob } from '@/lib/blob-storage'
 
 export const runtime = 'edge'
 
-
+const MAX_ASSET_SIZE_BYTES = 3 * 1024 * 1024
 
 export async function GET() {
     try {
@@ -29,17 +29,31 @@ export async function POST(request: Request) {
         }
 
         const { image, folder = 'assets', prefix = 'img' } = await request.json(); // Get the Base64 image, folder and prefix
-        const base64Data = image.split(",")[1]; // Extract the Base64 part
+        const { base64Data, extension, contentType } = parseBase64Image(image);
         const binaryData = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0)); // Convert Base64 to binary
 
-        // 获取上传结果，包含路径和 commit hash
-        const { path: imageUrl, commitHash } = await uploadImageToGitHub(binaryData, session.user.accessToken, folder, prefix);
+        if (binaryData.byteLength > MAX_ASSET_SIZE_BYTES) {
+            return NextResponse.json(
+                { error: 'Image size must be 3MB or less' },
+                { status: 413 }
+            );
+        }
+
+        // Upload binary asset to Vercel Blob and keep the returned Blob URL in metadata.
+        const uploadResult = await uploadAssetToBlob(binaryData, {
+            folder,
+            prefix,
+            extension,
+            contentType,
+        });
+        const imageUrl = uploadResult.url;
+        const assetHash = uploadResult.etag || uploadResult.pathname;
 
         // Handle metadata
         const metadata = await getFileContent('src/navsphere/content/resource-metadata.json') as ResourceMetadata;
         metadata.metadata.unshift({
-            commit: commitHash,  // 使用实际的 commit hash
-            hash: commitHash,    // 使用相同的 hash 作为资源标识
+            commit: assetHash,
+            hash: assetHash,
             path: imageUrl
         });
 
@@ -60,43 +74,33 @@ export async function POST(request: Request) {
     }
 }
 
-// Function to upload image to GitHub
-async function uploadImageToGitHub(binaryData: Uint8Array, token: string, folder: string, prefix: string): Promise<{ path: string, commitHash: string }> {
-    const owner = process.env.GITHUB_OWNER!;
-    const repo = process.env.GITHUB_REPO!;
-    const branch = process.env.GITHUB_BRANCH || 'main'
+function parseBase64Image(image: string): { base64Data: string; extension: string; contentType: string } {
+    const match = image.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
 
-    // Ensure folder doesn't have leading/trailing slashes for clean path construction
-    const cleanFolder = folder.replace(/^\/+|\/+$/g, '');
-    const path = `/${cleanFolder}/${prefix}_${Date.now()}.png`; // Generate a unique path for the image
-    const githubPath = 'public' + path;
-
-    // Convert Uint8Array to Base64
-    const base64String = uint8ArrayToBase64(binaryData); // Use Buffer to convert to Base64
-    const currentFileUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${githubPath}?ref=${branch}`
-    // Use fetch to upload the file to GitHub
-    const response = await fetch(currentFileUrl, {
-        method: 'PUT',
-        headers: {
-            'Authorization': `token ${token}`,
-            'Accept': 'application/vnd.github.v3+json',
-        },
-        body: JSON.stringify({
-            message: `Upload ${githubPath}`,
-            content: base64String, // Send only the Base64 string
-            branch: branch, // Explicitly specify the branch
-        }),
-    });
-    if (!response.ok) {
-        const errorData = await response.json();
-        console.error('Failed to upload image to GitHub:', errorData);
-        throw new Error(`Failed to upload image to GitHub: ${errorData.message || 'Unknown error'}`);
+    if (!match) {
+        throw new Error('Invalid image data');
     }
 
-    const responseData = await response.json();
-    const commitHash = responseData.commit.sha; // 获取 commit hash
+    const contentType = match[1];
+    const base64Data = match[2];
+    const subtype = contentType.split('/')[1].toLowerCase();
+    const extension = getImageExtension(subtype);
 
-    return { path, commitHash }; // Return the URL of the uploaded image
+    return { base64Data, extension, contentType };
+}
+
+function getImageExtension(subtype: string) {
+    switch (subtype) {
+        case 'jpeg':
+            return 'jpg';
+        case 'svg+xml':
+            return 'svg';
+        case 'x-icon':
+        case 'vnd.microsoft.icon':
+            return 'ico';
+        default:
+            return subtype;
+    }
 }
 
 export async function DELETE(request: Request) {
@@ -128,8 +132,7 @@ export async function DELETE(request: Request) {
             session.user.accessToken
         );
 
-        // 注意：这里只是从元数据中删除了引用，实际的图片文件仍然存在于GitHub仓库中
-        // 如果需要删除实际文件，需要额外的GitHub API调用
+        // Only remove metadata references; uploaded Blob objects are not deleted here.
 
         return NextResponse.json({
             success: true,

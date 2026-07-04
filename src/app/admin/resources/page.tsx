@@ -225,11 +225,11 @@ export default function ResourceManagement() {
   }
 
   const handleImageChange = async (file: File) => {
-    // Check file size (5MB limit)
-    if (file.size > 5 * 1024 * 1024) {
+    // Check file size (3MB limit)
+    if (file.size > 3 * 1024 * 1024) {
       toast({
         title: "错误",
-        description: "文件大小不能超过 5MB",
+        description: "文件大小不能超过 3MB",
         variant: "destructive",
       });
       return;
@@ -944,4 +944,4 @@ export default function ResourceManagement() {
       <Toaster />
     </>
   )
-} 
+}
