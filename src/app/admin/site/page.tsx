@@ -94,7 +94,7 @@ export default function SiteSettings() {
     } catch (error) {
       toast({
         title: "错误",
-        description: "保存失败",
+        description: (error as Error).message || "保存失败",
         variant: "destructive",
       });
     }
@@ -318,4 +318,4 @@ export default function SiteSettings() {
       <Toaster />
     </>
   )
-} 
+}
