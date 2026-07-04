@@ -5,6 +5,14 @@ export interface BrowserWebsiteMetadata {
   description: string
   icon: string
   image?: string
+  videoConfig?: {
+    type: 'bilibili' | 'youtube'
+    videoId?: string
+    bvid?: string
+    aid?: string
+    cid?: string
+    p?: number
+  }
   needsClientFetch?: boolean
 }
 
