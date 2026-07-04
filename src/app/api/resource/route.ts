@@ -10,10 +10,9 @@ const MAX_ASSET_SIZE_BYTES = 3 * 1024 * 1024
 
 export async function GET() {
     try {
-        const data = await getFileContent('src/navsphere/content/resource-metadata.json') as ResourceMetadata
-        if (!data?.metadata || !Array.isArray(data.metadata)) {
-            throw new Error('Invalid data structure');
-        }
+        const data = normalizeResourceMetadata(
+            await getFileContent('src/navsphere/content/resource-metadata.json')
+        )
         return NextResponse.json(data)
     } catch (error) {
         console.error('Failed to fetch resource metadata:', error)
@@ -50,12 +49,15 @@ export async function POST(request: Request) {
         const assetHash = uploadResult.etag || uploadResult.pathname;
 
         // Handle metadata
-        const metadata = await getFileContent('src/navsphere/content/resource-metadata.json') as ResourceMetadata;
+        const metadata = normalizeResourceMetadata(
+            await getFileContent('src/navsphere/content/resource-metadata.json')
+        );
         metadata.metadata.unshift({
             commit: assetHash,
             hash: assetHash,
             path: imageUrl
         });
+        metadata.generated = new Date().toISOString();
 
         await commitFile(
             'src/navsphere/content/resource-metadata.json',
@@ -103,6 +105,35 @@ function getImageExtension(subtype: string) {
     }
 }
 
+function normalizeResourceMetadata(data: unknown): ResourceMetadata {
+    const fallback: ResourceMetadata = {
+        commit: '',
+        generated: new Date().toISOString(),
+        metadata: [],
+    };
+
+    if (!data || typeof data !== 'object') {
+        return fallback;
+    }
+
+    const value = data as Partial<ResourceMetadata>;
+
+    if (!Array.isArray(value.metadata)) {
+        return fallback;
+    }
+
+    return {
+        commit: typeof value.commit === 'string' ? value.commit : '',
+        generated: typeof value.generated === 'string' ? value.generated : fallback.generated,
+        metadata: value.metadata.filter(item =>
+            item &&
+            typeof item.commit === 'string' &&
+            typeof item.hash === 'string' &&
+            typeof item.path === 'string'
+        ),
+    };
+}
+
 export async function DELETE(request: Request) {
     try {
         const session = await auth();
@@ -117,12 +148,15 @@ export async function DELETE(request: Request) {
         }
 
         // 获取当前的资源元数据
-        const metadata = await getFileContent('src/navsphere/content/resource-metadata.json') as ResourceMetadata;
+        const metadata = normalizeResourceMetadata(
+            await getFileContent('src/navsphere/content/resource-metadata.json')
+        );
 
         // 过滤掉要删除的资源
         const originalCount = metadata.metadata.length;
         metadata.metadata = metadata.metadata.filter(item => !resourceHashes.includes(item.hash));
         const deletedCount = originalCount - metadata.metadata.length;
+        metadata.generated = new Date().toISOString();
 
         // 更新资源元数据文件
         await commitFile(
