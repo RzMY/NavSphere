@@ -5,22 +5,32 @@ export async function getFileContent(path: string) {
   const owner = process.env.GITHUB_OWNER!
   const repo = process.env.GITHUB_REPO!
   const branch = process.env.GITHUB_BRANCH || 'main'
+  const timeoutMs = Number(process.env.GITHUB_FETCH_TIMEOUT_MS || 10000)
 
   try {
     const session = await auth()
-    const token = session?.user?.accessToken
+    const token = session?.user?.accessToken || process.env.GITHUB_PAT || process.env.GITHUB_TOKEN
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), timeoutMs)
 
     const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${branch}`
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github.v3.raw',
+      'User-Agent': 'NavSphere',
+    }
+
+    if (token) {
+      headers.Authorization = `token ${token}`
+    }
+
     const response = await fetch(apiUrl, {
-      headers: {
-        Accept: 'application/vnd.github.v3.raw',
-        Authorization: token ? `token ${token}` : '',
-        'User-Agent': 'NavSphere',
-      },
-    })
+      headers,
+      cache: 'no-store',
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeout))
 
     if (response.status === 404) {
-      console.log(`File not found: ${path}, returning default data`)
+      console.warn(`GitHub file not found: ${owner}/${repo}/${path}@${branch}, returning default data`)
       if (path.includes('navigation.json')) {
         return { navigationItems: [] }
       }
@@ -28,13 +38,13 @@ export async function getFileContent(path: string) {
     }
 
     if (!response.ok) {
-      throw new Error(`GitHub API error: ${response.statusText}`)
+      throw new Error(`GitHub API error: ${response.status} ${response.statusText} (${owner}/${repo}/${path}@${branch})`)
     }
 
     const data = await response.json()
     return data
   } catch (error) {
-    console.error('Error fetching file:', error)
+    console.error(`Error fetching GitHub file ${owner}/${repo}/${path}@${branch}:`, error)
     if (path.includes('navigation.json')) {
       return { navigationItems: [] }
     }
@@ -112,4 +122,4 @@ export async function commitFile(
       await delay(1000 * attempt)
     }
   }
-} 
+}

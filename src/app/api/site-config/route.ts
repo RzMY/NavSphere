@@ -1,13 +1,18 @@
 import { NextResponse } from 'next/server'
-import siteDataRaw from '@/navsphere/content/site.json'
+import { getRuntimeSiteData } from '@/lib/content-loader'
 import { processSiteData } from '@/lib/data-loader'
-import type { SiteInfo } from '@/types/site'
 
 export const runtime = 'edge'
+export const dynamic = 'force-dynamic'
 
 export async function GET() {
   try {
-    return NextResponse.json(processSiteData(siteDataRaw as SiteInfo))
+    const siteDataRaw = await getRuntimeSiteData()
+    return NextResponse.json(processSiteData(siteDataRaw), {
+      headers: {
+        'Cache-Control': 'no-store',
+      },
+    })
   } catch (error) {
     console.error('Error fetching site config:', error)
     return NextResponse.json(

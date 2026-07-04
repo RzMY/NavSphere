@@ -1,11 +1,17 @@
 import { NextResponse } from 'next/server'
-import siteData from '@/navsphere/content/site.json'
+import { getRuntimeSiteData } from '@/lib/content-loader'
 
 export const runtime = 'edge'
+export const dynamic = 'force-dynamic'
 
 export async function GET() {
   try {
-    return NextResponse.json(siteData)
+    const siteData = await getRuntimeSiteData()
+    return NextResponse.json(siteData, {
+      headers: {
+        'Cache-Control': 'no-store',
+      },
+    })
   } catch (error) {
     console.error('Error in site API:', error)
     return NextResponse.json(

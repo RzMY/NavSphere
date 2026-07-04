@@ -1,15 +1,22 @@
 import { VideoPlayerPage } from '@/components/video-player-page'
 import { Metadata } from 'next/types'
-import videosData from '@/navsphere/content/videos.json'
-import siteDataRaw from '@/navsphere/content/site.json'
+import { getRuntimeSiteData, getRuntimeVideosData } from '@/lib/content-loader'
 import { getProcessedData } from '@/lib/data-loader'
 
-function getData() {
+export const dynamic = 'force-dynamic'
+export const revalidate = 0
+
+async function getData() {
+    const [videosData, siteDataRaw] = await Promise.all([
+        getRuntimeVideosData(),
+        getRuntimeSiteData(),
+    ])
+
     return getProcessedData(videosData, siteDataRaw)
 }
 
-export function generateMetadata(): Metadata {
-    const { siteData } = getData()
+export async function generateMetadata(): Promise<Metadata> {
+    const { siteData } = await getData()
 
     return {
         title: `视频播放器 - ${siteData.basic.title}`,
@@ -21,8 +28,8 @@ export function generateMetadata(): Metadata {
     }
 }
 
-export default function VideoPlayerRoute() {
-    const { navigationData, siteData } = getData()
+export default async function VideoPlayerRoute() {
+    const { navigationData, siteData } = await getData()
 
     return (
         <VideoPlayerPage navigationData={navigationData} siteData={siteData} />
