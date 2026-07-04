@@ -4,6 +4,8 @@ import { getContentTypeFromExtension, uploadAssetToBlob } from '@/lib/blob-stora
 
 export const runtime = 'edge'
 
+const HTML_FETCH_TIMEOUT_MS = 8000
+
 interface VideoConfig {
     type: 'bilibili' | 'youtube'
     videoId?: string
@@ -217,7 +219,7 @@ async function fetchWebsiteMetadata(url: string): Promise<WebsiteMetadata> {
         const response = await fetch(url, {
             headers: headers,
             redirect: 'follow',
-            signal: AbortSignal.timeout(1500)
+            signal: AbortSignal.timeout(HTML_FETCH_TIMEOUT_MS)
         })
 
         if (response.ok) {
@@ -255,8 +257,8 @@ function getFallbackMetadata(url: string): WebsiteMetadata {
 
         return {
             title: capitalizedTitle,
-            description: `访问 ${hostname}`,
-            icon: `https://www.google.com/s2/favicons?sz=128&domain=${hostname}`
+            description: '',
+            icon: `${urlObj.origin}/favicon.ico`
         }
     } catch {
         return {
@@ -278,6 +280,7 @@ function parseMetadataFromHtml(html: string, url: string): WebsiteMetadata {
     const description = extractMetaContent(html, 'description') ||
         extractMetaContent(html, 'og:description') ||
         extractMetaContent(html, 'twitter:description') ||
+        extractDescriptionFromBody(html) ||
         ''
 
     // 解析 OG Image
@@ -481,6 +484,34 @@ function getFileExtension(url: string, contentType?: string): string {
     } catch {
         return 'png'
     }
+}
+
+function extractDescriptionFromBody(html: string): string {
+    const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)
+    if (!bodyMatch) {
+        return ''
+    }
+
+    const text = decodeHtmlEntities(bodyMatch[1]
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<svg[\s\S]*?<\/svg>/gi, ' ')
+        .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim())
+
+    return text.slice(0, 160)
+}
+
+function decodeHtmlEntities(value: string): string {
+    return value
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
 }
 
 function getImageExtensionFromContentType(contentType?: string | null): string | null {
