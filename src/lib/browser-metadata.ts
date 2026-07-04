@@ -33,7 +33,7 @@ export async function fetchWebsiteMetadataWithBrowserFallback(url: string): Prom
     })
 
     if (!response.ok) {
-      return serverMetadata
+      throw new Error(`Browser metadata fetch failed with status ${response.status}`)
     }
 
     const html = await response.text()
@@ -51,7 +51,7 @@ export async function fetchWebsiteMetadataWithBrowserFallback(url: string): Prom
     })
   } catch (error) {
     console.warn('Browser metadata fetch failed:', error)
-    return serverMetadata
+    throw new Error('浏览器无法读取该站点信息，请手动填写或在本地部署环境中抓取')
   }
 }
 
@@ -80,10 +80,10 @@ function extractAssetUrls(html: string, baseUrl: string) {
   const document = new DOMParser().parseFromString(html, 'text/html')
   const iconHref = document.querySelector<HTMLLinkElement>(
     'link[rel~="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]'
-  )?.href
+  )?.getAttribute('href') || undefined
   const imageHref = document.querySelector<HTMLMetaElement>(
     'meta[property="og:image"], meta[name="twitter:image"], meta[itemprop="image"]'
-  )?.content
+  )?.getAttribute('content') || undefined
 
   return {
     iconUrl: resolveUrl(iconHref, baseUrl),
