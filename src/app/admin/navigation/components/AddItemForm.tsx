@@ -20,6 +20,7 @@ import { Textarea } from "@/registry/new-york/ui/textarea"
 import { Switch } from "@/registry/new-york/ui/switch"
 import { useState, useEffect } from "react"
 import { useToast } from "@/registry/new-york/hooks/use-toast"
+import { fetchWebsiteMetadataWithBrowserFallback } from "@/lib/browser-metadata"
 
 const formSchema = z.object({
   id: z.string().optional(),
@@ -85,19 +86,7 @@ export function AddItemForm({ onSubmit, onCancel, defaultValues }: AddItemFormPr
 
     setIsFetchingMetadata(true)
     try {
-      const response = await fetch('/api/website-metadata', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ url }),
-      })
-
-      if (!response.ok) {
-        throw new Error('获取网站信息失败')
-      }
-
-      const metadata = await response.json()
+      const metadata = await fetchWebsiteMetadataWithBrowserFallback(url)
 
       // 只在字段为空时自动填充
       if (!form.getValues('title')) {

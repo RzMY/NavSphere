@@ -5,6 +5,7 @@ import { getContentTypeFromExtension, uploadAssetToBlob } from '@/lib/blob-stora
 export const runtime = 'edge'
 
 const HTML_FETCH_TIMEOUT_MS = 8000
+const MAX_BROWSER_ASSET_SIZE_BYTES = 3 * 1024 * 1024
 
 interface VideoConfig {
     type: 'bilibili' | 'youtube'
@@ -21,6 +22,7 @@ interface WebsiteMetadata {
     icon: string
     image?: string
     videoConfig?: VideoConfig
+    needsClientFetch?: boolean
 }
 
 export async function POST(request: Request) {
@@ -30,13 +32,16 @@ export async function POST(request: Request) {
             return new Response('Unauthorized', { status: 401 })
         }
 
-        const { url } = await request.json()
+        const { url, html, iconDataUrl, imageDataUrl } = await request.json()
 
         if (!url || !isValidUrl(url)) {
             return NextResponse.json({ error: '请提供有效的网站链接' }, { status: 400 })
         }
 
-        const metadata = await fetchWebsiteMetadata(url)
+        const isPrivateUrl = isPrivateNetworkUrl(url)
+        const metadata = typeof html === 'string' && html.trim()
+            ? parseMetadataFromHtml(html, url)
+            : await fetchWebsiteMetadata(url)
 
         // 确保 metadata 对象包含所有必需的属性
         if (!metadata || typeof metadata !== 'object') {
@@ -44,7 +49,14 @@ export async function POST(request: Request) {
         }
 
         // 处理封面/OG图片
-        if (metadata.image) {
+        if (metadata.image && imageDataUrl) {
+            try {
+                const { path } = await uploadDataUrlToBlob(imageDataUrl, 'cover', 'assets/cover')
+                metadata.image = path
+            } catch (error) {
+                console.warn('Failed to upload browser-fetched image:', error)
+            }
+        } else if (metadata.image && !isPrivateUrl) {
             try {
                 // 使用页面 URL 作为 Referer，并将文件前缀设为 'cover'，存储到 assets/cover 目录
                 const imageUrl = await downloadAndUploadIcon(
@@ -66,7 +78,14 @@ export async function POST(request: Request) {
         const isVideoUrl = extractBilibiliVideoId(url) !== null
         const skipFavicon = isVideoUrl && metadata.image
 
-        if (metadata.icon && !skipFavicon) {
+        if (metadata.icon && iconDataUrl) {
+            try {
+                const { path } = await uploadDataUrlToBlob(iconDataUrl, 'favicon', 'assets')
+                metadata.icon = path
+            } catch (error) {
+                console.warn('Failed to upload browser-fetched icon:', error)
+            }
+        } else if (metadata.icon && !skipFavicon && !isPrivateUrl) {
             try {
                 // 使用页面 URL 作为 Referer
                 const iconUrl = await downloadAndUploadIcon(metadata.icon, session.user.accessToken, url, 'favicon')
@@ -77,6 +96,9 @@ export async function POST(request: Request) {
                 // 如果图标下载失败，尝试使用 Google favicon 服务
                 try {
                     const domain = new URL(url).hostname
+                    if (isPrivateUrl) {
+                        throw new Error('Skip Google favicon fallback for private network URL')
+                    }
                     const fallbackIconUrl = await downloadGoogleFavicon(domain, session.user.accessToken)
                     metadata.icon = fallbackIconUrl
                 } catch (fallbackError) {
@@ -227,14 +249,14 @@ async function fetchWebsiteMetadata(url: string): Promise<WebsiteMetadata> {
             return parseMetadataFromHtml(html, url)
         } else if (response.status === 403) {
             console.warn(`网站拒绝访问 (403): 该网站可能阻止了自动化访问`)
-            return getFallbackMetadata(url)
+            return getFallbackMetadata(url, true)
         } else if (response.status === 404) {
-            return getFallbackMetadata(url)
+            return getFallbackMetadata(url, true)
         } else if (response.status >= 500) {
-            return getFallbackMetadata(url)
+            return getFallbackMetadata(url, true)
         } else {
             console.warn(`无法访问网站: ${response.status}`)
-            return getFallbackMetadata(url)
+            return getFallbackMetadata(url, true)
         }
     } catch (error) {
         if (error instanceof Error && error.name === 'TimeoutError') {
@@ -242,29 +264,31 @@ async function fetchWebsiteMetadata(url: string): Promise<WebsiteMetadata> {
         } else {
             console.warn('获取网站元数据失败:', error)
         }
-        return getFallbackMetadata(url)
+        return getFallbackMetadata(url, true)
     }
 }
 
-function getFallbackMetadata(url: string): WebsiteMetadata {
+function getFallbackMetadata(url: string, needsClientFetch: boolean = false): WebsiteMetadata {
     try {
         const urlObj = new URL(url)
+        // 生成基本的网站信息
         const hostname = urlObj.hostname
 
-        // 生成基本的网站信息
         const title = hostname.replace(/^www\./, '').split('.')[0]
         const capitalizedTitle = title.charAt(0).toUpperCase() + title.slice(1)
 
         return {
             title: capitalizedTitle,
             description: '',
-            icon: `${urlObj.origin}/favicon.ico`
+            icon: `${urlObj.origin}/favicon.ico`,
+            needsClientFetch
         }
     } catch {
         return {
             title: '未知网站',
             description: '无法获取网站信息',
-            icon: ''
+            icon: '',
+            needsClientFetch
         }
     }
 }
@@ -356,7 +380,7 @@ function extractFavicon(html: string, baseUrl: string): string | null {
     }
 
     // 如果没有找到，使用 Google 的 favicon 服务作为备用
-    return `https://www.google.com/s2/favicons?sz=128&domain=${base.hostname}`
+    return `${base.origin}/favicon.ico`
 }
 
 async function downloadGoogleFavicon(domain: string, token: string): Promise<string> {
@@ -554,5 +578,61 @@ async function uploadImageToBlob(
     return {
         path: uploadResult.url,
         commitHash: uploadResult.etag || uploadResult.pathname,
+    }
+}
+
+async function uploadDataUrlToBlob(
+    dataUrl: string,
+    prefix: string,
+    folder: string
+): Promise<{ path: string, commitHash: string }> {
+    const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/)
+    if (!match) {
+        throw new Error('Invalid browser asset data')
+    }
+
+    const contentType = match[1]
+    const base64Data = match[2]
+    const binaryData = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0))
+
+    if (binaryData.byteLength > MAX_BROWSER_ASSET_SIZE_BYTES) {
+        throw new Error('Browser asset is too large')
+    }
+
+    return uploadImageToBlob(
+        binaryData,
+        '',
+        getImageExtensionFromContentType(contentType) || 'png',
+        prefix,
+        folder,
+        contentType
+    )
+}
+
+function isPrivateNetworkUrl(url: string): boolean {
+    try {
+        const hostname = new URL(url).hostname.toLowerCase()
+
+        if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+            return true
+        }
+
+        if (hostname === '::1' || hostname.startsWith('fc') || hostname.startsWith('fd') || hostname.startsWith('fe80')) {
+            return true
+        }
+
+        const ipv4Parts = hostname.split('.').map(part => Number(part))
+        if (ipv4Parts.length !== 4 || ipv4Parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) {
+            return false
+        }
+
+        const [first, second] = ipv4Parts
+        return first === 10 ||
+            first === 127 ||
+            (first === 172 && second >= 16 && second <= 31) ||
+            (first === 192 && second === 168) ||
+            (first === 169 && second === 254)
+    } catch {
+        return false
     }
 }

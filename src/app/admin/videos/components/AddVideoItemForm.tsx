@@ -22,6 +22,7 @@ import { useState, useEffect } from "react"
 import { useToast } from "@/registry/new-york/hooks/use-toast"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/registry/new-york/ui/select"
 import { VideoIconUpload } from "./VideoIconUpload"
+import { fetchWebsiteMetadataWithBrowserFallback } from "@/lib/browser-metadata"
 
 const videoConfigSchema = z.object({
     type: z.enum(['bilibili', 'youtube']),
@@ -103,19 +104,7 @@ export function AddVideoItemForm({ onSubmit, onCancel, defaultValues }: AddVideo
 
         setIsFetchingMetadata(true)
         try {
-            const response = await fetch('/api/website-metadata', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ url }),
-            })
-
-            if (!response.ok) {
-                throw new Error('获取网站信息失败')
-            }
-
-            const metadata = await response.json()
+            const metadata = await fetchWebsiteMetadataWithBrowserFallback(url)
 
             // 标题和描述：如果是强制刷新或当前为空，则更新
             if (force || !form.getValues('title')) {

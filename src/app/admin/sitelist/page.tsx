@@ -56,6 +56,7 @@ import {
 
 import { NavigationSubItem, NavigationItem } from '@/types/navigation'
 import { moveItem } from '@/lib/navigation-tree'
+import { fetchWebsiteMetadataWithBrowserFallback } from '@/lib/browser-metadata'
 
 interface SubCategory {
   id: string
@@ -947,19 +948,7 @@ export default function SiteListPage() {
 
     setFetching(true)
     try {
-      const response = await fetch('/api/website-metadata', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ url }),
-      })
-
-      if (!response.ok) {
-        throw new Error('获取网站信息失败')
-      }
-
-      const metadata = await response.json()
+      const metadata = await fetchWebsiteMetadataWithBrowserFallback(url)
 
       // 根据forceUpdate决定是否覆盖已有信息
       const updates: Partial<{ name: string; description: string; icon: string }> = {}
@@ -2031,4 +2020,4 @@ export default function SiteListPage() {
       </div>
     </TooltipProvider>
   )
-} 
+}
